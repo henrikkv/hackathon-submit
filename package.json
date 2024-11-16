@@ -1,0 +1,25 @@
+{
+  "name": "workdir",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "1.47.0",
+    "@types/node": "^22.9.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.26.2",
+    "@octokit/rest": "^21.0.2",
+    "aloria": "^1.0.5",
+    "dotenv": "^16.4.5",
+    "openai": "^4.72.0",
+    "simple-git": "^3.27.0"
+  }
+}
