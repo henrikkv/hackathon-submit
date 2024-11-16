@@ -20,6 +20,8 @@
     "aloria": "^1.0.5",
     "dotenv": "^16.4.5",
     "openai": "^4.72.0",
+    "playwright": "1.47.0",
+    "playwright-test": "^14.1.6",
     "simple-git": "^3.27.0"
   }
 }

@@ -13,6 +13,8 @@ import path from 'path';
 import { parse } from '@babel/parser';
 
 async function generateReadme(repoUrl: string): Promise<{
+  projectName: string;
+  briefDescription: string;
   readme: string;
   detailedDescription: string;
 }> {
@@ -35,15 +37,20 @@ async function generateReadme(repoUrl: string): Promise<{
   fs.rmSync(tempDir, { recursive: true, force: true });
 
   // Generate README and detailed description using OpenAI
-  const readme = await createReadme(openai, codeSummary);
+  const { projectName, briefDescription, readme } = await createReadme(
+    openai,
+    codeSummary
+  );
   const detailedDescription = await createDetailedDescription(
     openai,
     codeSummary
   );
 
   return {
-    readme: readme.trim(),
-    detailedDescription: detailedDescription.trim(),
+    projectName,
+    briefDescription,
+    readme,
+    detailedDescription,
   };
 }
 
@@ -155,28 +162,57 @@ function summarizeFile(content: string, filename: string): string {
 async function createReadme(
   openai: OpenAI,
   codeSummary: string
-): Promise<string> {
+): Promise<{ projectName: string; briefDescription: string; readme: string }> {
   try {
     const readmeResponse = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: [
         {
           role: "system",
-          content: "You are an assistant that writes detailed README files for GitHub repositories based on their codebase summaries."
+          content: "You are an assistant that writes detailed README files for GitHub repositories based on their codebase summaries. Output all your responses in valid JSON format.",
         },
         {
           role: 'user',
-          content: `Based on the following codebase summary, generate a comprehensive README file for the repository:\n\n${codeSummary}`,
+          content: `Based on the following codebase summary, generate a comprehensive README file for the repository. Additionally, provide the project's name and a brief description. Your response should be in the following JSON format without any additional text:
+
+\`\`\`json
+{
+  "projectName": "<project name>",
+  "briefDescription": "<brief description>",
+  "readmeContent": "<full README content>"
+}
+\`\`\`
+
+Codebase summary:
+${codeSummary}`,
         },
       ],
     });
 
-    return (
-      readmeResponse.choices[0].message?.content || 'No README generated'
-    );
+    const responseContent = readmeResponse.choices[0].message?.content || '';
+
+    // Use a regular expression to extract JSON
+    const jsonMatch = responseContent.match(/{[\s\S]*}/);
+    if (!jsonMatch) {
+      throw new Error('No valid JSON found in the response');
+    }
+
+    let jsonString = jsonMatch[0];
+
+    // Sanitize the JSON string by escaping control characters
+    jsonString = jsonString.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+
+    // Parse the JSON
+    const data = JSON.parse(jsonString);
+
+    return {
+      projectName: data.projectName.trim(),
+      briefDescription: data.briefDescription.trim(),
+      readme: data.readmeContent.trim(),
+    };
   } catch (error) {
     console.error('Error generating README:', error);
-    throw error;
+    throw new Error('Failed to parse JSON from OpenAI response');
   }
 }
 
@@ -196,7 +232,10 @@ async function createDetailedDescription(
         },
         {
           role: 'user',
-          content: `Based on the following codebase summary, provide a very detailed description of the full application:\n\n${codeSummary}`,
+          content: `Based on the following codebase summary, provide a very detailed description of the full application:
+
+Codebase summary:
+${codeSummary}`,
         },
       ],
     });
@@ -220,26 +259,139 @@ function createImagePrompt(description: string): string {
   // Create a focused prompt
   return `User interface screenshot of a web application: ${shortDescription.slice(0, 950)}`.trim();
 }
+async function fetchAndSaveImage(imageUrl: string, savePath: string): Promise<void> {
+  const response = await fetch(imageUrl);
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  fs.writeFileSync(savePath, buffer);
+}
+async function generateImages(openai: OpenAI, description: string): Promise<{ logoPath: string, coverPath: string }> {
+  const maxRetries = 5;
+  let attempt = 0;
 
-async function generateImages(openai: OpenAI, description: string): Promise<string[]> {
-  const imageUrls: string[] = [];
-  try {
-    const imagePrompt = createImagePrompt(description);
-    console.log('Using image generation prompt:', imagePrompt);
-    
-    const imagesResponse = await openai.images.generate({
-      prompt: imagePrompt,
-      n: 4,
-      size: '1024x1024',
-    });
-    return imagesResponse.data.map((image: any) => image.url);
-  } catch (error) {
-    console.error('Error generating images:', error);
-    return imageUrls;
+  while (attempt < maxRetries) {
+    try {
+      const logoPrompt = createImagePrompt(description) + " Logo";
+      const coverPrompt = createImagePrompt(description) + " Cover image";
+
+      const [logoResponse, coverResponse] = await Promise.all([
+        openai.images.generate({
+          prompt: logoPrompt,
+          n: 1,
+          size: '1024x1024',
+        }),
+        openai.images.generate({
+          prompt: coverPrompt,
+          n: 1,
+          size: '1024x1024',
+        }),
+      ]);
+
+      // Save images to disk
+      const logoUrl = logoResponse.data[0].url;
+      const coverUrl = coverResponse.data[0].url;
+
+      const logoPath = path.join(__dirname, 'logo.png');
+      const coverPath = path.join(__dirname, 'cover.png');
+
+      if (logoUrl && coverUrl) {
+        await Promise.all([
+          fetchAndSaveImage(logoUrl, logoPath),
+          fetchAndSaveImage(coverUrl, coverPath),
+        ]);
+      } else {
+        throw new Error('Logo or cover URL is undefined');
+      }
+
+      return {
+        logoPath,
+        coverPath,
+      };
+    } catch (error) {
+      console.error('Error generating images:', error);
+      if ((error as any).response && (error as any).response.status === 429) {
+        // Rate limit error
+        const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff
+        console.log(`Rate limited. Retrying in ${waitTime / 1000} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        attempt++;
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new Error('Failed to generate images after multiple attempts');
+}
+async function generateScreenshots(openai: OpenAI, description: string, count: number): Promise<string[]> {
+  const maxRetries = 5;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      const screenshotPrompt = createImagePrompt(description) + " Screenshot";
+
+      const screenshotResponse = await openai.images.generate({
+        prompt: screenshotPrompt,
+        n: count,
+        size: '1024x1024',
+      });
+
+      const screenshotPaths: string[] = [];
+
+      for (let i = 0; i < count; i++) {
+        const screenshotUrl = screenshotResponse.data[i]?.url;
+        if (screenshotUrl) {
+          const screenshotPath = path.join(__dirname, `screenshot${i + 1}.png`);
+          await fetchAndSaveImage(screenshotUrl, screenshotPath);
+          screenshotPaths.push(screenshotPath);
+        } else {
+          console.error(`Screenshot URL not found for index ${i}`);
+        }
+      }
+
+      return screenshotPaths;
+    } catch (error) {
+      console.error('Error generating screenshots:', error as Error);
+      if ((error as any).response && (error as any).response.status === 429) {
+        // Rate limit error
+        const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff
+        console.log(`Rate limited. Retrying in ${waitTime / 1000} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        attempt++;
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new Error('Failed to generate screenshots after multiple attempts');
+}
+async function uploadImage(page: any, imageSource: string, fileInputId: string, isFilePath: boolean = false) {
+  let filePath = '';
+
+  if (isFilePath) {
+    // Use the provided file path
+    filePath = imageSource;
+  } else {
+    // Fetch the image from the URL and save it temporarily
+    const response = await fetch(imageSource);
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    filePath = path.join(__dirname, 'temp_image.png');
+    fs.writeFileSync(filePath, buffer);
+  }
+
+  // Directly set the input files without waiting for visibility
+  await page.setInputFiles(`#${fileInputId}`, filePath);
+
+  if (!isFilePath) {
+    // Remove the temporary file
+    fs.unlinkSync(filePath);
   }
 }
 
+
 async function main() {
+    const shouldGenerateImages = false;
   // Configure Aloria with environment variable
   configureAloria({
     apiKey: process.env.ALORIA_API_KEY,
@@ -264,33 +416,92 @@ async function main() {
   const fullUrl = `${baseUrl}/events/bangkok/project`;
   await page.goto(fullUrl);
 
-  const { readme, detailedDescription } = await generateReadme(
-    'https://github.com/henrikkv/hackathon-submit'
-  );
+  // Generate README and extract project details
+  const {
+    projectName,
+    briefDescription,
+    readme,
+    detailedDescription,
+  } = await generateReadme('https://github.com/henrikkv/hackathon-submit');
 
-  console.log('Generated README:\n');
+  console.log('Project Name:', projectName);
+  console.log('Brief Description:', briefDescription);
+  console.log('\nGenerated README:\n');
   console.log(readme);
   console.log('\nDetailed Description:\n');
   console.log(detailedDescription);
 
-  // Generate images
-  const imageUrls = await generateImages(openai, detailedDescription);
-  console.log('Generated Image URLs:');
-  console.log(imageUrls);
-  
+  let logoPath: string;
+  let coverPath: string;
+  let screenshotPaths: string[] = [];
 
-  const result = await runAloria({
-    page,
-    task: `If the project has not been created yet, fill the "Project name", "What category does your project belong to?", and "What emoji best represents your project?" fields with something. Then click the checkmark, and Create Project button.`,
-    /*resultSchema: z.object({
-      author: z.string(),
-      text: z.string(),
-      when: z.string(),
-    }),*/
-  });
-  console.log(result);
+  if (shouldGenerateImages) {
+    // Generate images and save them to disk
+    const imagePaths = await generateImages(openai, detailedDescription);
+    logoPath = imagePaths.logoPath;
+    coverPath = imagePaths.coverPath;
+
+    // Generate screenshots
+    const screenshotCount = 5;
+    screenshotPaths = await generateScreenshots(openai, detailedDescription, screenshotCount);
+  } else {
+    // Load images from disk
+    logoPath = path.join(__dirname, 'logo.png');
+    coverPath = path.join(__dirname, 'cover.png');
+
+    // Load existing screenshots from disk
+    const screenshotCount = 6;
+    for (let i = 0; i < screenshotCount; i++) {
+      screenshotPaths.push(path.join(__dirname, `screenshot${i + 1}.png`));
+    }
+  }
 
   // Open Playwright debugger
+  await page.pause();
+
+  const createProjectButton = page.getByRole('button', { name: 'Create Project' });
+  if (await createProjectButton.isVisible()) {
+    await page.getByPlaceholder('MyAwesomeProject').fill("test");
+    await page.getByText('What category does your project belong to?').click();
+    await page.getByText('Gaming').click();
+    await page.getByPlaceholder('Pick an emoji').fill('🎮');
+    await page.getByRole('checkbox').check();
+    await createProjectButton.click();
+  }
+  await page.pause();
+  const truncatedBriefDescription = briefDescription.slice(0, 279);
+  await page.getByPlaceholder('Exchange onramp/offramp using').fill(truncatedBriefDescription);
+  await page.getByPlaceholder('This project combines a state').fill(detailedDescription);
+  await page.getByPlaceholder('This project uses the @').fill(detailedDescription)
+  await page.getByPlaceholder('https://github.com/hackathon/').fill("https://github.com/henrikkv/hackathon-submit");
+  await page.getByRole('button', { name: 'Save & Continue' }).click();
+  await page.pause();
+
+
+  // Upload logo and cover images
+  await uploadImage(page, logoPath, 'logoId', true);
+  await uploadImage(page, coverPath, 'bannerId', true);
+
+  // Screenshot input IDs
+  const screenshotIds = [
+    'screenshot1',
+    'screenshot2',
+    'screenshot3',
+    'screenshot4',
+    'screenshot5',
+    'screenshot6',
+  ];
+
+  // Upload screenshots
+  for (let i = 0; i < screenshotPaths.length; i++) {
+    await uploadImage(page, screenshotPaths[i], screenshotIds[i], true);
+  }
+
+  // Add a 3-minute pause
+  await new Promise(resolve => setTimeout(resolve, 3 * 60 * 1000));
+
+  await page.pause();
+  await page.getByRole('button', { name: 'Save & Continue' }).click();
   await page.pause();
 
   await browser.close();
