@@ -389,9 +389,56 @@ async function uploadImage(page: any, imageSource: string, fileInputId: string, 
   }
 }
 
+// Add this function to generate the video script
+async function generateVideoScript(
+  openai: OpenAI,
+  detailedDescription: string
+): Promise<string> {
+  try {
+    // Estimate the number of words that can be spoken in 3 minutes
+    const estimatedWordCount = 450; // Average speaking rate is 150 words per minute
+
+    // Create a prompt for OpenAI to generate the script
+    const prompt = `Please write a clear, engaging, and informative script for a video about the following application. The script should be approximately ${estimatedWordCount} words long, suitable for a voiceover that lasts about 3 minutes. The video should be between 2 and 4 minutes long.
+
+Application detailed description:
+${detailedDescription}
+
+The script should introduce the application, explain its key features, and highlight its benefits to the user. The tone should be professional and accessible to a general audience.
+
+Please output only the script, without any additional text or headers.`;
+
+    const scriptResponse = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a creative assistant that writes video scripts based on application descriptions.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+    });
+
+    const scriptContent = scriptResponse.choices[0].message?.content || 'No script generated';
+
+    return scriptContent.trim();
+  } catch (error) {
+    console.error('Error generating video script:', error);
+    throw error;
+  }
+}
+
+async function uploadVideo(page: any, videoPath: string, fileInputId: string) {
+  // Directly set the input files without waiting for visibility
+  await page.setInputFiles(`#${fileInputId}`, videoPath);
+}
 
 async function main() {
     const shouldGenerateImages = false;
+    const shouldGenerateVideoScript = true;
   // Configure Aloria with environment variable
   configureAloria({
     apiKey: process.env.ALORIA_API_KEY,
@@ -416,6 +463,7 @@ async function main() {
   const fullUrl = `${baseUrl}/events/bangkok/project`;
   await page.goto(fullUrl);
 
+  await page.pause();
   // Generate README and extract project details
   const {
     projectName,
@@ -431,6 +479,15 @@ async function main() {
   console.log('\nDetailed Description:\n');
   console.log(detailedDescription);
 
+  // Generate video script if the flag is set
+  if (shouldGenerateVideoScript) {
+    const videoScript = await generateVideoScript(openai, detailedDescription);
+    const scriptFilePath = path.join(__dirname, 'video_script.txt');
+    fs.writeFileSync(scriptFilePath, videoScript, 'utf8');
+    console.log(`\nVideo script saved to ${scriptFilePath}`);
+  }
+
+
   let logoPath: string;
   let coverPath: string;
   let screenshotPaths: string[] = [];
@@ -442,7 +499,7 @@ async function main() {
     coverPath = imagePaths.coverPath;
 
     // Generate screenshots
-    const screenshotCount = 5;
+    const screenshotCount = 6;
     screenshotPaths = await generateScreenshots(openai, detailedDescription, screenshotCount);
   } else {
     // Load images from disk
@@ -472,11 +529,10 @@ async function main() {
   const truncatedBriefDescription = briefDescription.slice(0, 279);
   await page.getByPlaceholder('Exchange onramp/offramp using').fill(truncatedBriefDescription);
   await page.getByPlaceholder('This project combines a state').fill(detailedDescription);
-  await page.getByPlaceholder('This project uses the @').fill(detailedDescription)
+  await page.getByPlaceholder('This project uses the @').fill(detailedDescription);
   await page.getByPlaceholder('https://github.com/hackathon/').fill("https://github.com/henrikkv/hackathon-submit");
   await page.getByRole('button', { name: 'Save & Continue' }).click();
   await page.pause();
-
 
   // Upload logo and cover images
   await uploadImage(page, logoPath, 'logoId', true);
@@ -502,6 +558,36 @@ async function main() {
 
   await page.pause();
   await page.getByRole('button', { name: 'Save & Continue' }).click();
+  await page.pause();
+  const videoPath = path.join(__dirname, 'video.mp4');
+  await uploadVideo(page, videoPath, 'video');
+  await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+  await page.getByRole('button', { name: 'Save & Continue' }).click();
+  await page.pause();
+  const dropdownNames = [
+    'techDevTools',
+    'techBlockchain',
+    'techLanguages',
+    'techWebFrameworks',
+    'techDatabases',
+    'techDesign',
+  ];
+
+  for (const name of dropdownNames) {
+    // Click on the dropdown to open it
+    await page.click(`select[name="${name}"]`);
+    // Select "Other" from the dropdown options
+    await page.selectOption(`select[name="${name}"]`, { label: 'Other' });
+  }
+  await page.getByRole('button', { name: 'Save & Continue' }).click();
+  await page.pause();
+  await page.getByLabel('Partner Prizes only').click();
+  await page.getByRole('button', { name: 'Save & Continue' }).click();
+  await page.pause();
+  await page.getByRole('checkbox').check();
+  await page.getByRole('button', { name: 'Save & Continue' }).click();
+  await page.pause();
+  await page.locator('div').filter({ hasText: /^Submit project$/ }).nth(2).click();
   await page.pause();
 
   await browser.close();
