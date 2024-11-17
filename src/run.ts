@@ -437,8 +437,17 @@ async function uploadVideo(page: any, videoPath: string, fileInputId: string) {
 }
 
 async function main() {
-    const shouldGenerateImages = false;
-    const shouldGenerateVideoScript = true;
+  const shouldGenerateImages = false;
+  const shouldGenerateVideoScript = false;
+
+  // Get both command-line arguments
+  const [baseUrl, githubRepo] = process.argv.slice(2);
+  if (!baseUrl || !githubRepo) {
+    console.error('Please provide both a base URL and GitHub repository URL as command-line arguments.');
+    console.error('Usage: npm start <base_url> <github_repo_url>');
+    process.exit(1);
+  }
+
   // Configure Aloria with environment variable
   configureAloria({
     apiKey: process.env.ALORIA_API_KEY,
@@ -452,13 +461,6 @@ async function main() {
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
 
-  // Get the base URL from command-line arguments
-  const baseUrl = process.argv[2];
-  if (!baseUrl) {
-    console.error('Please provide a base URL as a command-line argument.');
-    process.exit(1);
-  }
-
   // Combine the base URL with the specific path
   const fullUrl = `${baseUrl}/events/bangkok/project`;
   await page.goto(fullUrl);
@@ -470,7 +472,7 @@ async function main() {
     briefDescription,
     readme,
     detailedDescription,
-  } = await generateReadme('https://github.com/henrikkv/hackathon-submit');
+  } = await generateReadme(githubRepo);
 
   console.log('Project Name:', projectName);
   console.log('Brief Description:', briefDescription);
@@ -554,14 +556,14 @@ async function main() {
   }
 
   // Add a 3-minute pause
-  await new Promise(resolve => setTimeout(resolve, 3 * 60 * 1000));
+  await new Promise(resolve => setTimeout(resolve, 1 * 60 * 1000));
 
   await page.pause();
   await page.getByRole('button', { name: 'Save & Continue' }).click();
   await page.pause();
   const videoPath = path.join(__dirname, 'video.mp4');
   await uploadVideo(page, videoPath, 'video');
-  await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+  await new Promise(resolve => setTimeout(resolve, 1 * 60 * 1000));
   await page.getByRole('button', { name: 'Save & Continue' }).click();
   await page.pause();
   const dropdownNames = [
